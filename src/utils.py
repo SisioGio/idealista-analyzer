@@ -3,7 +3,7 @@ from openai import OpenAI
 import os
 from dotenv import load_dotenv
 import pg8000
-
+from botocore.exceptions import ClientError
 # from dbutils import PooledDB
 import boto3
 import requests
@@ -12,6 +12,9 @@ import traceback
 load_dotenv()
 
 db_pool = None
+bedrock = boto3.client("bedrock-runtime", region_name="eu-central-1")
+
+
 
 def get_secret(secret_name,key=None):
     region = os.getenv("AWS_REGION", "eu-central-1")
@@ -44,8 +47,7 @@ def get_db_conn():
         database=IDEALISTA_KEYS['db_name'],
         user=credentials["username"],
         password=credentials["password"],
-        timeout=15,
-        socket_timeout=120 
+        timeout=15
     )
   
     print("DB connection established.")
@@ -170,7 +172,8 @@ def process_data(conn,data):
 def analyze_description(home):
     description = home.get("description", "")
     prompt= generate_prompt(description)
-    analysis, cost = invoke_openai(prompt, model_id="gpt-4o-mini", object=True)
+    # analysis, cost = invoke_bedrock(prompt, object=True)
+    analysis, cost = invoke_openai(prompt, object=True,model_id="gpt-4o-mini")
     return analysis, cost
 
 def update_availability(cursor,home_id, available_from):
@@ -241,6 +244,48 @@ def add_home(cursor, home_data):
     
 
 
+def invoke_bedrock(user_prompt,max_tokens=30000,model_id="anthropic.claude-3-5-sonnet-20240620-v1:0",object=False):
+    payload = {
+        "max_tokens": max_tokens,
+        "anthropic_version": "bedrock-2023-05-31",
+        "messages": [
+            {"role": "user", "content": user_prompt},
+            {"role": "assistant", "content": "Here is your JSON data without additional text before or after:"}
+        ],
+    }
+    try:
+        response = bedrock.invoke_model(
+            modelId=model_id,
+            contentType="application/json",
+            
+            accept="application/json",
+            body=json.dumps(payload),
+        )
+
+        result = json.loads(response["body"].read())
+
+        ai_output = result["content"][0]['text']
+        output = parse_output(ai_output,object=object)
+        return output,0
+
+    except ClientError as e:
+        print("🔥 BEDROCK CLIENT ERROR")
+        print("--------------------------------------------------")
+
+        # Full error response
+        print("Full error response:")
+        print(json.dumps(e.response, indent=2))
+
+        print("--------------------------------------------------")
+        print("Error metadata:")
+        print(" • Error Code:", e.response.get("Error", {}).get("Code"))
+        print(" • Error Message:", e.response.get("Error", {}).get("Message"))
+        print(" • HTTP Status Code:", e.response.get("ResponseMetadata", {}).get("HTTPStatusCode"))
+        print(" • Request ID:", e.response.get("ResponseMetadata", {}).get("RequestId"))
+
+        print("--------------------------------------------------")
+
+        raise
 
  
 def invoke_openai(prompt,model_id="gpt-4o-mini",object=True):
