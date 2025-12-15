@@ -39,7 +39,7 @@ def get_db_conn():
     global db_pool
     if db_pool:
         return db_pool
-    secret_name = os.getenv("RDS_SECRET_NAME")
+    secret_name ='rds!db-efc52989-89c8-4009-a2c3-e211a33ba1bd'
     credentials = get_secret(secret_name)
     db_conn = pg8000.connect(
         host=IDEALISTA_KEYS['db_endpoint'],
@@ -98,7 +98,9 @@ def fetch_data():
 def process_data(conn,data):
     # Placeholder for data processing logic
     items = data.get("elementList", [])
-
+    print(f"Found {len(items)} items")
+    items = items[:2]
+    print(f"Processing {len(items)} items")
     
     valid = 0
     with conn.cursor() as cursor:
