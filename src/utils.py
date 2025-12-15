@@ -44,7 +44,7 @@ def get_db_pool():
     db_pool = psycopg2.pool.SimpleConnectionPool(
         minconn=1,
         maxconn=5,
-        host=IDEALISTA_KEYS['db-endpoint'],
+        host=IDEALISTA_KEYS['db_endpoint'],
         port=IDEALISTA_KEYS['db_port'],
         dbname=IDEALISTA_KEYS['db_name'],
         user=credentials["username"],
@@ -101,6 +101,7 @@ def process_data(data):
     items = data.get("elementList", [])
     pool = get_db_pool()
     conn = pool.getconn()
+    valid = 0
     with conn.cursor() as cursor:
         for item in items:
             try:
@@ -137,14 +138,19 @@ def process_data(data):
                 analysis,cost = analyze_description(home_data)
                 print(f"Analysis Cost: {cost:.6f} USD")
                 home_data.update(analysis)
-                if home_data.get("is_relevant", False):
+                
+                if home_data.get("is_relevant", False) or True:
                     print("Sending notification...")
                     send_notification(home_data)
+                    valid += 1
+                
             except Exception as e:
                 print(f"Error processing item {item.get('propertyCode')}: {e}")
                 
         conn.commit()
     pool.putconn(conn)
+    print(f"Processed {len(items)} items, {valid} were relevant.")
+    send_telegram_message(f"Processed {len(items)} items, {valid} were relevant.")
         
 
 def analyze_description(home):
@@ -153,7 +159,16 @@ def analyze_description(home):
     analysis, cost = invoke_openai(prompt, model_id="gpt-4o-mini", object=True)
     return analysis, cost
 
-
+def update_availability(cursor,home_id, available_from):
+    update_query = """
+    UPDATE property_listing
+    SET available_from = %s
+    WHERE idealista_id = %s;
+    """
+    cursor.execute(update_query, (available_from, home_id))
+    
+    print(f"Updated availability for home ID {home_id} to {available_from}")
+    
 
 def send_notification(home_data):
     
