@@ -14,8 +14,6 @@ load_dotenv()
 db_pool = None
 
 def get_secret(secret_name,key=None):
-   
-    
     region = os.getenv("AWS_REGION", "eu-central-1")
     client = boto3.client("secretsmanager", region_name=region)
     response = client.get_secret_value(SecretId=secret_name)
@@ -26,8 +24,8 @@ def get_secret(secret_name,key=None):
 
 
 OPENAI_API_KEY = get_secret('openai-api-key','openai-api-key')
-client = OpenAI(api_key=OPENAI_API_KEY)
 
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 IDEALISTA_KEYS = get_secret('idealista-keys')
@@ -239,18 +237,20 @@ def add_home(cursor, home_data):
 
  
 def invoke_openai(prompt,model_id="gpt-4o-mini",object=True):
-    response = client.responses.create(
-            model=model_id,
-            input=prompt
-        )
-    text = response.output_text
+    response = client.chat.completions.create(
+        model=model_id,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    text = response.choices[0].message.content
     cost = parse_openai_response(response,model_id)
     output_json = parse_output(text,object=object)
     return output_json,cost
 
+
 def parse_openai_response(response,model_id):
-    input_tokens = response.usage.input_tokens
-    output_tokens = response.usage.output_tokens
+    input_tokens = response.usage.prompt_tokens
+    output_tokens = response.usage.completion_tokens
     INPUT_PRICE = OPENAI_PRICING[model_id]['input']
     OUTPUT_PRICE = OPENAI_PRICING[model_id]['output']
     cost = (input_tokens * INPUT_PRICE) + (output_tokens * OUTPUT_PRICE)

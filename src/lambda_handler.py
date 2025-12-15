@@ -22,7 +22,7 @@ def main(event,context):
     # print("Main function executed.")
 
 def load_data():
-    file_path = r'data.json'
+    file_path = r'C:\Users\Alessio\Projects\idealista-analyzer\src\data.json'
     with open(file_path,'r',encoding='utf-8') as f:
         data = json.load(f)
     return data
@@ -35,5 +35,5 @@ def testing():
     process_data(conn,data)
     
 
-# testing()
+main({},{})
     
