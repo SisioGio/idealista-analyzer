@@ -4,6 +4,7 @@ from aws_cdk import (
     aws_events as events,
     aws_events_targets as targets,
     aws_iam as iam,
+    Duration,
 )
 from constructs import Construct
 
@@ -21,14 +22,25 @@ class IdealistaStack(Stack):
                 resources=[secret_arn]
             )
         )
+        # Layer for lambdas
+        utils_layer = _lambda.LayerVersion(
+            self, "UtilsLayer",
+            code=_lambda.Code.from_asset("layer"),
+            compatible_runtimes=[_lambda.Runtime.PYTHON_3_12],
+            description="Shared utils"
+        )
         
-        # 1. Lambda function
+        
+        #  Lambda function
         scraper = _lambda.Function(
             self, "idealista-scraper-lambda",
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler="lambda_handler.main",
             code=_lambda.Code.from_asset("src"),
-            role=role
+            role=role,
+            layers=[utils_layer],
+            timeout=Duration.minutes(15),
+        
         )
 
         # 2. Schedule expressions (CRON)
