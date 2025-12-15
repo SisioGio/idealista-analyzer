@@ -16,10 +16,12 @@ class IdealistaStack(Stack):
         role = iam.Role(self, "idealista-scraper-lambda-role",
                         assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"))
         secret_arn='arn:aws:secretsmanager:eu-central-1:495348364820:secret:idealista-keys-oQ6s6l'
+        rds_secret_arn='arn:aws:secretsmanager:eu-central-1:495348364820:secret:rds!db-efc52989-89c8-4009-a2c3-e211a33ba1bd-MuKnTg'
+        openai_secret_arn='arn:aws:secretsmanager:eu-central-1:495348364820:secret:openai-api-key-dzeB13'
         role.add_to_policy(
             iam.PolicyStatement(
                 actions=["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
-                resources=[secret_arn]
+                resources=[secret_arn, rds_secret_arn, openai_secret_arn]
             )
         )
         # Layer for lambdas
