@@ -1,0 +1,339 @@
+import json
+from openai import OpenAI
+import os
+from dotenv import load_dotenv
+import psycopg2
+import psycopg2.pool
+import boto3
+import requests
+from datetime import datetime
+load_dotenv()
+
+db_pool = None
+
+def get_secret(secret_name,key=None):
+   
+    
+    region = os.getenv("AWS_REGION", "eu-central-1")
+    client = boto3.client("secretsmanager", region_name=region)
+    response = client.get_secret_value(SecretId=secret_name)
+    secret_dict = json.loads(response["SecretString"])
+    if key:
+        return secret_dict.get(key)
+    return secret_dict
+
+
+OPENAI_API_KEY = get_secret('openai-api-key','openai-api-key')
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+
+IDEALISTA_KEYS = get_secret('idealista-keys')
+
+API_KEY = IDEALISTA_KEYS['idealista-api-key']
+SECRET_KEY = IDEALISTA_KEYS['idealista-secret-key']
+
+def get_db_pool():
+    """Initialize (or reuse) a PostgreSQL connection pool."""
+    global db_pool
+    if db_pool:
+        return db_pool
+    secret_name = os.getenv("RDS_SECRET_NAME")
+    credentials = get_secret(secret_name)
+
+    db_pool = psycopg2.pool.SimpleConnectionPool(
+        minconn=1,
+        maxconn=5,
+        host=IDEALISTA_KEYS['db-endpoint'],
+        port=IDEALISTA_KEYS['db_port'],
+        dbname=IDEALISTA_KEYS['db_name'],
+        user=credentials["username"],
+        password=credentials["password"],
+        connect_timeout=5,
+    )
+    print("DB pool initialized")
+    return db_pool
+
+def get_auth_token():
+    
+    url = "https://api.idealista.com/oauth/token"
+
+    payload = {
+        'grant_type': 'client_credentials',
+        'scope': 'read'
+    }
+    response = requests.post(url, data=payload, auth=(API_KEY, SECRET_KEY))
+    response.raise_for_status()
+    return response.json().get("access_token")
+
+
+def fetch_data():
+    token = get_auth_token()
+    headers = {
+        'Authorization': f'Bearer {token}'
+    }
+    url = "https://api.idealista.com/3.5/es/search"
+    response = requests.post(
+        url, 
+        headers=headers, 
+        files={
+        "center": (None, "41.394915,2.159288"),
+        "operation": (None, "rent"),
+        "distance": (None, "10000"),
+        "propertyType": (None, "homes"),
+        "locale": (None, "en"),
+        "locationId": (None, "0-EU-ES-08"),
+        "maxItems": (None, "50"),
+        "numPage": (None, "1"),
+        "sinceDate": (None, "T"),
+        "order": (None, "publicationDate"),
+        "sort": (None, "desc"),
+        "hasMultimedia": (None, "True"),
+    })
+
+    print(response.status_code)
+    print(response.json())
+    return response.json()
+
+
+def process_data(data):
+    # Placeholder for data processing logic
+    items = data.get("elementList", [])
+    pool = get_db_pool()
+    conn = pool.getconn()
+    with conn.cursor() as cursor:
+        for item in items:
+            try:
+                
+                print(f"Property ID: {item.get('propertyCode')}, Price: {item.get('price')} {item.get('currency')}")
+                property_code= item.get('propertyCode',None)
+                description=item.get('description',None)
+                price = item.get('price',None)
+                url = item.get('url',None)
+                size= item.get('size',None)
+                rooms= item.get('rooms',None)
+                thumbnail= item.get('thumbnail',None)
+                priceByArea= item.get('priceByArea',None)
+                district= item.get('district',None)
+                distance= item.get('distance',None)
+                
+                if listing_exists(cursor, property_code):
+                    print(f"Listing with ID {property_code} already exists. Skipping insertion.")
+                    continue
+                home_data = {
+                    "idealista_id": property_code,
+                    "description": description,
+                    "price": price,
+                    "url": url,
+                    "size": size,
+                    "rooms": rooms,
+                    "thumbnail": thumbnail,
+                    "price_by_area": priceByArea,
+                    "district": district,
+                    "distance": distance
+                }
+                
+                add_home(cursor, home_data)
+                analysis,cost = analyze_description(home_data)
+                print(f"Analysis Cost: {cost:.6f} USD")
+                home_data.update(analysis)
+                if home_data.get("is_relevant", False):
+                    print("Sending notification...")
+                    send_notification(home_data)
+            except Exception as e:
+                print(f"Error processing item {item.get('propertyCode')}: {e}")
+                
+        conn.commit()
+    pool.putconn(conn)
+        
+
+def analyze_description(home):
+    description = home.get("description", "")
+    prompt= generate_prompt(description)
+    analysis, cost = invoke_openai(prompt, model_id="gpt-4o-mini", object=True)
+    return analysis, cost
+
+
+
+def send_notification(home_data):
+    
+    message=create_home_html(home_data)
+    send_telegram_message(message)
+    
+    
+def listing_exists(cursor, idealista_id):
+    """Check if a listing with the given idealista_id exists in the database."""
+    query = "SELECT 1 FROM property_listing WHERE idealista_id = %s;"
+    cursor.execute(query, (idealista_id,))
+    return cursor.fetchone() is not None
+
+
+def add_home(cursor, home_data):
+    """Insert a home record into the database."""
+    insert_query = """
+    INSERT INTO property_listing (
+        idealista_id,  description, price, url,size,
+        rooms,thumbnail,price_by_area,
+        district,distance
+    ) VALUES (
+        %(idealista_id)s, %(description)s, %(price)s, %(url)s, %(size)s,
+        %(rooms)s, %(thumbnail)s, %(price_by_area)s,
+        %(district)s, %(distance)s
+    )
+    
+    """
+    cursor.execute(insert_query, home_data)
+    
+
+
+
+ 
+def invoke_openai(prompt,model_id="gpt-4o-mini",object=True):
+    response = client.responses.create(
+            model=model_id,
+            input=prompt
+        )
+    text = response.output_text
+    cost = parse_openai_response(response,model_id)
+    output_json = parse_output(text,object=object)
+    return output_json,cost
+
+def parse_openai_response(response,model_id):
+    input_tokens = response.usage.input_tokens
+    output_tokens = response.usage.output_tokens
+    INPUT_PRICE = OPENAI_PRICING[model_id]['input']
+    OUTPUT_PRICE = OPENAI_PRICING[model_id]['output']
+    cost = (input_tokens * INPUT_PRICE) + (output_tokens * OUTPUT_PRICE)
+    return cost
+
+def parse_output(output,object=False):
+    try:
+        if object:
+            start = output.index("{")
+            end = output.rfind("}") + 1
+        else:
+            # Strip everything except the JSON block
+            start = output.index("[")
+            end = output.rfind("]") + 1
+        json_str = output[start:end]
+        # Optional: print cleaned JSON string
+        print("Extracted JSON:\n", json_str)
+        # Parse the JSON
+        parsed = json.loads(json_str)
+        return parsed
+
+    except (ValueError, json.JSONDecodeError) as e:
+        print("Failed to parse JSON:", e)
+        return None
+
+
+
+def send_telegram_message(message: str):
+    # Example usage:
+    BOT_TOKEN = IDEALISTA_KEYS['telegram-bot-token']
+    CHAT_ID = IDEALISTA_KEYS['telegram-chat']
+    
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+
+    response = requests.post(url, data=payload)
+
+    if response.status_code != 200:
+        print("Error sending message:", response.text)
+    else:
+        print("Message sent successfully")
+
+    return response.json()
+
+
+
+  
+
+def generate_prompt(home_description):
+    prompt = f"""
+    Analyze the following real estate property description for rent  and extract the following information:
+    
+    - available_from: String representing the date when the property is available for rent
+    - is_relevant: True if available_from is from 15 February 2026,False otherwise.
+
+    Property Description: \"\"\"{home_description}\"\"\"
+    Today's date is {datetime.now().strftime('%Y-%m-%d')}.
+    Return the information in the following JSON format:
+    {{
+        "available_from": 'YYYY-MM-DD',
+        "is_relevant": true|false
+    }}
+    Do not hallucinate information. If the available_from date is not mentioned, assume the property is available immediately and set is_relevant accordingly.
+    """
+    return prompt
+
+def create_home_html(home_data):
+    """
+    Generate a Telegram-friendly HTML message for a property listing
+    """
+    message = f"""
+🏠 <b>Property Listing</b>
+
+
+<b>Price:</b> {home_data.get('price', 'N/A')} €
+<b>Available From:</b> {home_data.get('available_from', 'N/A')}
+<b>Price / m²:</b> {home_data.get('price_by_area', 'N/A')} €
+<b>Size:</b> {home_data.get('size', 'N/A')} m²
+<b>Rooms:</b> {home_data.get('rooms', 'N/A')}
+<b>District:</b> {home_data.get('district', 'N/A')}
+<b>Distance:</b> {home_data.get('distance', 'N/A')} meters
+
+<b>Relevant:</b> {home_data.get('is_relevant', False)}
+
+<b>URL:</b> <a href="{home_data.get('url', '#')}">View Listing</a>
+"""
+    return message.strip()
+
+
+
+OPENAI_PRICING = {
+    # ───────────────
+    # GPT-4.1 family
+    # ───────────────
+    'gpt-4.1-mini': {
+        'input': 0.40 / 1_000_000,    # $0.40 / 1M
+        'output': 1.60 / 1_000_000    # $1.60 / 1M
+    },
+    'gpt-4.1': {
+        'input': 2.00 / 1_000_000,    # $2.00 / 1M
+        'output': 8.00 / 1_000_000    # $8.00 / 1M
+    },
+
+    # ───────────────
+    # GPT-4o family
+    # ───────────────
+    'gpt-4o-mini': {
+        'input': 0.15 / 1_000_000,    # $0.15 / 1M
+        'output': 0.60 / 1_000_000    # $0.60 / 1M
+    },
+    'gpt-4o': {
+        'input': 5.00 / 1_000_000,    # $5.00 / 1M
+        'output': 15.00 / 1_000_000   # $15.00 / 1M
+    },
+
+    # ───────────────
+    # GPT-5 family
+    # ───────────────
+    'gpt-5-nano': {
+        'input': 0.05 / 1_000_000,   # $0.05 / 1M
+        'output': 0.40 / 1_000_000   # $0.40 / 1M
+    },
+    'gpt-5-mini': {
+        'input': 0.25 / 1_000_000,    # $0.25 / 1M
+        'output': 2.00 / 1_000_000    # $2.00 / 1M
+    },
+    'gpt-5': {
+        'input': 1.25 / 1_000_000,    # $1.25 / 1M
+        'output': 10.00 / 1_000_000   # $10.00 / 1M
+    }
+}
