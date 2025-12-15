@@ -35,9 +35,7 @@ SECRET_KEY = IDEALISTA_KEYS['idealista-secret-key']
 
 def get_db_conn():
     """Initialize (or reuse) a PostgreSQL connection pool."""
-    global db_pool
-    if db_pool:
-        return db_pool
+
     secret_name ='rds!db-efc52989-89c8-4009-a2c3-e211a33ba1bd'
     credentials = get_secret(secret_name)
     db_conn = pg8000.connect(
@@ -46,7 +44,8 @@ def get_db_conn():
         database=IDEALISTA_KEYS['db_name'],
         user=credentials["username"],
         password=credentials["password"],
-        timeout=5,
+        timeout=15,
+        socket_timeout=120 
     )
   
     print("DB connection established.")
@@ -98,7 +97,7 @@ def process_data(conn,data):
     # Placeholder for data processing logic
     items = data.get("elementList", [])
     print(f"Found {len(items)} items")
-    # items = items[:2]
+    items = items[:2]
     print(f"Processing {len(items)} items")
     
     valid = 0
@@ -165,7 +164,7 @@ def process_data(conn,data):
         f"  🌟 Relevant items  : {valid} ({relevant_pct:.1f}%)\n"
         f"  ❌ Errors          : {errors}"
     )
-    send_telegram_message(message)
+    # send_telegram_message(message)
         
 
 def analyze_description(home):
@@ -180,6 +179,7 @@ def update_availability(cursor,home_id, available_from):
     SET available_from = %s
     WHERE idealista_id = %s;
     """
+    cursor.execute("SET statement_timeout = 60000")
     cursor.execute(update_query, (available_from, home_id))
     
     print(f"Updated availability for home ID {home_id} to {available_from}")
@@ -193,9 +193,16 @@ def send_notification(home_data):
     
 def listing_exists(cursor, idealista_id):
     """Check if a listing with the given idealista_id exists in the database."""
+    cursor.execute("SET statement_timeout = 60000")
+
     query = "SELECT 1 FROM property_listing WHERE idealista_id = %s;"
     cursor.execute(query, (idealista_id,))
-    return cursor.fetchone() is not None
+    property = cursor.fetchone()
+  
+    if property:
+        print(f"Listing with ID {idealista_id} already exists. Skipping insertion.")
+        print(f"Found property {property['id']}")
+    return property is not None
 
 
 def add_home(cursor, home_data):
@@ -229,7 +236,7 @@ def add_home(cursor, home_data):
         home_data.get("district"),
         home_data.get("distance"),
     )
-
+    cursor.execute("SET statement_timeout = 60000")
     cursor.execute(insert_query, values)
     
 
