@@ -35,5 +35,5 @@ def testing():
     process_data(conn,data)
     
 
-main({},{})
-    
+
+main(None,None)
