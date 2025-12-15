@@ -3,7 +3,7 @@ from openai import OpenAI
 import os
 from dotenv import load_dotenv
 import pg8000
-from DBUtils.PooledDB import PooledDB
+
 # from dbutils import PooledDB
 import boto3
 import requests
@@ -34,27 +34,24 @@ IDEALISTA_KEYS = get_secret('idealista-keys')
 API_KEY = IDEALISTA_KEYS['idealista-api-key']
 SECRET_KEY = IDEALISTA_KEYS['idealista-secret-key']
 
-def get_db_pool():
+def get_db_conn():
     """Initialize (or reuse) a PostgreSQL connection pool."""
     global db_pool
     if db_pool:
         return db_pool
     secret_name = os.getenv("RDS_SECRET_NAME")
     credentials = get_secret(secret_name)
-
-    db_pool = PooledDB(
-        creator=pg8000.connect,
-        mincached=1,
-        maxcached=5,
+    db_conn = pg8000.connect(
         host=IDEALISTA_KEYS['db_endpoint'],
         port=int(IDEALISTA_KEYS['db_port']),
         database=IDEALISTA_KEYS['db_name'],
         user=credentials["username"],
         password=credentials["password"],
-        connect_timeout=5,
+        timeout=5,
     )
-    print("DB pool initialized")
-    return db_pool
+  
+    print("DB connection established.")
+    return db_conn
 
 def get_auth_token():
     
@@ -98,11 +95,11 @@ def fetch_data():
     return response.json()
 
 
-def process_data(data):
+def process_data(conn,data):
     # Placeholder for data processing logic
     items = data.get("elementList", [])
-    pool = get_db_pool()
-    conn = pool.getconn()
+
+    
     valid = 0
     with conn.cursor() as cursor:
         for item in items:
@@ -150,7 +147,7 @@ def process_data(data):
                 print(f"Error processing item {item.get('propertyCode')}: {e}")
                 
         conn.commit()
-    pool.putconn(conn)
+    
     print(f"Processed {len(items)} items, {valid} were relevant.")
     send_telegram_message(f"Processed {len(items)} items, {valid} were relevant.")
         
