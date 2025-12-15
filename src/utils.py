@@ -8,6 +8,7 @@ import pg8000
 import boto3
 import requests
 from datetime import datetime
+import traceback
 load_dotenv()
 
 db_pool = None
@@ -99,10 +100,11 @@ def process_data(conn,data):
     # Placeholder for data processing logic
     items = data.get("elementList", [])
     print(f"Found {len(items)} items")
-    items = items[:2]
+    # items = items[:2]
     print(f"Processing {len(items)} items")
     
     valid = 0
+    errors = 0
     with conn.cursor() as cursor:
         for item in items:
             try:
@@ -144,14 +146,28 @@ def process_data(conn,data):
                     print("Sending notification...")
                     send_notification(home_data)
                     valid += 1
-                
+                available_from = analysis.get('available_from', None)
+                update_availability(cursor,property_code,available_from)
+                conn.commit()
             except Exception as e:
+                traceback.print_exc()
+                errors += 1
                 print(f"Error processing item {item.get('propertyCode')}: {e}")
                 
-        conn.commit()
+        
     
-    print(f"Processed {len(items)} items, {valid} were relevant.")
-    send_telegram_message(f"Processed {len(items)} items, {valid} were relevant.")
+    print(f"Processed {len(items)} items, {valid} were relevant. [Errors: {errors}]")
+    
+    total = len(items)
+    relevant_pct = (valid / total * 100) if total else 0
+
+    message = (
+        f"📊 Processing Summary:\n"
+        f"  ✅ Total items     : {total}\n"
+        f"  🌟 Relevant items  : {valid} ({relevant_pct:.1f}%)\n"
+        f"  ❌ Errors          : {errors}"
+    )
+    send_telegram_message(message)
         
 
 def analyze_description(home):
@@ -185,20 +201,38 @@ def listing_exists(cursor, idealista_id):
 
 
 def add_home(cursor, home_data):
-    """Insert a home record into the database."""
+    """Insert a home record into the database using pg8000."""
     insert_query = """
     INSERT INTO property_listing (
-        idealista_id,  description, price, url,size,
-        rooms,thumbnail,price_by_area,
-        district,distance
+        idealista_id,
+        description,
+        price,
+        url,
+        size,
+        rooms,
+        thumbnail,
+        price_by_area,
+        district,
+        distance
     ) VALUES (
-        %(idealista_id)s, %(description)s, %(price)s, %(url)s, %(size)s,
-        %(rooms)s, %(thumbnail)s, %(price_by_area)s,
-        %(district)s, %(distance)s
+        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
     )
-    
     """
-    cursor.execute(insert_query, home_data)
+
+    values = (
+        home_data.get("idealista_id"),
+        home_data.get("description"),
+        home_data.get("price"),
+        home_data.get("url"),
+        home_data.get("size"),
+        home_data.get("rooms"),
+        home_data.get("thumbnail"),
+        home_data.get("price_by_area"),
+        home_data.get("district"),
+        home_data.get("distance"),
+    )
+
+    cursor.execute(insert_query, values)
     
 
 
