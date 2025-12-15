@@ -1,15 +1,9 @@
-import requests
 from dotenv import load_dotenv
-import os
-import base64
 import json
 from utils import *
 
-
 load_dotenv()
 
-
-    
 def main():
     
     
