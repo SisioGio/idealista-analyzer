@@ -2,8 +2,8 @@ import json
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
-import psycopg2
-import psycopg2.pool
+import pg8000
+from DBUtils.PooledDB import PooledDB
 import boto3
 import requests
 from datetime import datetime
@@ -41,12 +41,13 @@ def get_db_pool():
     secret_name = os.getenv("RDS_SECRET_NAME")
     credentials = get_secret(secret_name)
 
-    db_pool = psycopg2.pool.SimpleConnectionPool(
-        minconn=1,
-        maxconn=5,
+    db_pool = PooledDB(
+        creator=pg8000.connect,
+        mincached=1,
+        maxcached=5,
         host=IDEALISTA_KEYS['db_endpoint'],
-        port=IDEALISTA_KEYS['db_port'],
-        dbname=IDEALISTA_KEYS['db_name'],
+        port=int(IDEALISTA_KEYS['db_port']),
+        database=IDEALISTA_KEYS['db_name'],
         user=credentials["username"],
         password=credentials["password"],
         connect_timeout=5,

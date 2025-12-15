@@ -26,5 +26,5 @@ def testing():
         data = json.load(f)
 
     process_data(data)
-testing()
+# testing()
     
